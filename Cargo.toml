@@ -1,0 +1,16 @@
+[package]
+name = "brood-flow"
+version = "0.0.1"
+edition = "2021"
+license-file = "LICENSE"
+
+description = "A binary for connecting Broodminder devices to Home Assistant via MQTT."
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+btleplug = "0.9"
+tokio = {version= "1.18", features = ["macros", "rt-multi-thread"]}
+env_logger = "0.9"
+futures = "0.3"
+log = "0.4"
