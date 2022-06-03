@@ -1,4 +1,6 @@
 # Example configuration file
+broker_host: [YOUR HOSTNAME OR IP] # e.g. 192.168.0.1
+broker_port: [YOUR PORT] # e.g. 1883
 
 devices:
   - id: "47:14:87"
