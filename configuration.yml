@@ -1,0 +1,5 @@
+# Example configuration file
+
+devices:
+  - id: "47:14:87"
+    name: "Debug Broodminder"

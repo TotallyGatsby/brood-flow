@@ -7,7 +7,22 @@ use std::error::Error;
 
 use btleplug::api::{Central, CentralEvent, Manager as _, Peripheral as _, ScanFilter};
 use btleplug::platform::{Adapter, Manager};
+use config::Config;
 use futures::stream::StreamExt;
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+struct Configuration {
+  devices: Vec<DeviceConfiguration>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeviceConfiguration {
+  id: Option<String>,     // The Broodminder issued ID, eg "47:01:01"
+  name: Option<String>,   // A name for the device for your reference
+  topic: Option<String>,  // The MQTT topic to publish updates to
+  realtime: Option<bool>, // If true, publishes realtime temperature data. If false reports broodminder aggregated temp information
+}
 
 #[derive(Debug)]
 struct BroodminderDevice {
@@ -35,6 +50,17 @@ async fn get_central(manager: &Manager) -> Adapter {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
   env_logger::init();
+
+  // TODO: Handle when the configuration file isn't found
+  let settings = Config::builder()
+    .add_source(config::File::with_name("configuration.yml"))
+    .build()
+    .unwrap();
+
+  println!(
+    "Settings: {:?}",
+    settings.try_deserialize::<Configuration>().unwrap()
+  );
 
   let manager = Manager::new().await?;
 
