@@ -49,7 +49,9 @@ async fn get_central(manager: &Manager) -> Adapter {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-  env_logger::init();
+  env_logger::init_from_env(
+    env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"),
+  );
 
   // TODO: Handle when the configuration file isn't found
   let settings = Config::builder()
@@ -57,7 +59,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .build()
     .unwrap();
 
-  println!(
+  info!(
     "Settings: {:?}",
     settings.try_deserialize::<Configuration>().unwrap()
   );
