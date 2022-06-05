@@ -12,6 +12,7 @@ use btleplug::platform::{Adapter, Manager};
 use config::Config;
 use futures::stream::StreamExt;
 use rumqttc::{AsyncClient, MqttOptions, QoS};
+use std::collections::HashMap;
 use std::error::Error;
 use std::time::Duration;
 
@@ -50,6 +51,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
   // Not sure why, but the client doesn't send if it's not marked as mutable here
   let (mut client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
 
+  /*
   tokio::task::spawn(async move {
     for i in 0..10 {
       match client
@@ -62,7 +64,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
       tokio::time::sleep(Duration::from_millis(100)).await;
     }
-  });
+  });*/
 
   // get the first bluetooth adapter
   // connect to the adapter
@@ -78,6 +80,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
   // TODO: Add a scan filter?
   central.start_scan(ScanFilter::default()).await?;
 
+  // Cache of discovered devices
+  let mut devices: HashMap<String, BroodminderDevice> = HashMap::new();
+
+  info!("Listening for Broodminder events");
   // When events are received by the BTLE stream, process them
   // TODO: This should be run in its own thread (or task(?) once btleplug uses async channels).
   while let Some(event) = events.next().await {
@@ -89,18 +95,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
     {
       // Ensure we're only reading data from Broodminder devices
       if BroodminderDevice::is_broodminder(&manufacturer_data) {
-        // Instantiate an object
-        // TODO: Probably don't need to instantiate one of these every message?
-        // The frequency of updates is ~1 per minute per device, so it's not a big performance concern
-        let mut brood_data = BroodminderDevice::build_broodminder_device(&manufacturer_data[&653]);
         let peripheral = central.peripheral(&id).await?;
         let properties = peripheral.properties().await?;
-        brood_data.device_id = properties
+        let device_id = properties
           .unwrap()
           .local_name
           .unwrap_or(String::from("00:00:00"));
 
-        info!("{:?}", brood_data);
+        if devices.contains_key(&device_id) {
+          // Update the previous object
+          devices
+            .entry(device_id.clone())
+            .or_default()
+            .update(&manufacturer_data[&653]);
+          info!("Updated Device: {:?}", devices[&device_id]);
+        } else {
+          // Instantiate an object
+          let mut brood_data =
+            BroodminderDevice::build_broodminder_device(&manufacturer_data[&653]);
+          brood_data.device_id = device_id.clone();
+
+          info!("New Broodminder device detected: {:?}", brood_data);
+
+          devices.insert(device_id.clone(), brood_data);
+        }
+
+        // Send MQTT messages
+        devices
+          .entry(device_id.clone())
+          .and_modify(|device| device.send_config_messages(client.clone()));
+        devices
+          .entry(device_id.clone())
+          .and_modify(|device| device.send_state_message(client.clone()));
       }
     }
   }
