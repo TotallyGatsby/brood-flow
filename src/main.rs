@@ -83,53 +83,75 @@ async fn main() -> Result<(), Box<dyn Error>> {
   // Cache of discovered devices
   let mut devices: HashMap<String, BroodminderDevice> = HashMap::new();
 
-  info!("Listening for Broodminder events");
-  // When events are received by the BTLE stream, process them
-  // TODO: This should be run in its own thread (or task(?) once btleplug uses async channels).
-  while let Some(event) = events.next().await {
-    // Right now, we only care about the data advertisements from the Broodminder devices
-    if let CentralEvent::ManufacturerDataAdvertisement {
-      id,
-      manufacturer_data,
-    } = event
-    {
-      // Ensure we're only reading data from Broodminder devices
-      if BroodminderDevice::is_broodminder(&manufacturer_data) {
-        let peripheral = central.peripheral(&id).await?;
-        let properties = peripheral.properties().await?;
-        let device_id = properties
-          .unwrap()
-          .local_name
-          .unwrap_or(String::from("00:00:00"));
+  tokio::task::spawn(async move {
+    info!("Listening for Broodminder events.");
+    // When events are received by the BTLE stream, process them
+    // TODO: This should be run in its own thread (or task(?) once btleplug uses async channels).
+    while let Some(event) = events.next().await {
+      // Right now, we only care about the data advertisements from the Broodminder devices
+      if let CentralEvent::ManufacturerDataAdvertisement {
+        id,
+        manufacturer_data,
+      } = event
+      {
+        // Ensure we're only reading data from Broodminder devices
+        if BroodminderDevice::is_broodminder(&manufacturer_data) {
+          let peripheral = central.peripheral(&id).await.unwrap();
+          let properties = peripheral.properties().await.unwrap();
+          let device_id = properties
+            .unwrap()
+            .local_name
+            .unwrap_or(String::from("00:00:00"));
 
-        if devices.contains_key(&device_id) {
-          // Update the previous object
+          if devices.contains_key(&device_id) {
+            // Update the previous object
+            devices
+              .entry(device_id.clone())
+              .or_default()
+              .update(&manufacturer_data[&653]);
+            info!("Updated Device: {:?}", devices[&device_id]);
+          } else {
+            // Instantiate an object
+            let mut brood_data =
+              BroodminderDevice::build_broodminder_device(&manufacturer_data[&653]);
+            brood_data.device_id = device_id.clone();
+
+            info!("New Broodminder device detected: {:?}", brood_data);
+
+            devices.insert(device_id.clone(), brood_data);
+          }
+
           devices
             .entry(device_id.clone())
-            .or_default()
-            .update(&manufacturer_data[&653]);
-          info!("Updated Device: {:?}", devices[&device_id]);
-        } else {
-          // Instantiate an object
-          let mut brood_data =
-            BroodminderDevice::build_broodminder_device(&manufacturer_data[&653]);
-          brood_data.device_id = device_id.clone();
+            .and_modify(|device| device.send_config_messages(client.clone()));
 
-          info!("New Broodminder device detected: {:?}", brood_data);
-
-          devices.insert(device_id.clone(), brood_data);
+          devices
+            .entry(device_id.clone())
+            .and_modify(|device| device.send_state_message(client.clone()));
         }
+      }
+    }
+  });
 
-        // Send MQTT messages
-        devices
-          .entry(device_id.clone())
-          .and_modify(|device| device.send_config_messages(client.clone()));
-        devices
-          .entry(device_id.clone())
-          .and_modify(|device| device.send_state_message(client.clone()));
+  loop {
+    let event = eventloop.poll().await;
+    match event {
+      Ok(rumqttc::Event::Incoming(rumqttc::Incoming::ConnAck(msg))) => {
+        info!("Connected to the broker!");
+        debug!("Connected msg = {msg:?}");
+      }
+      Ok(rumqttc::Event::Outgoing(rumqttc::Outgoing::Disconnect)) => {
+        warn!("Disconnected, retry happening...");
+      }
+      Ok(msg) => {
+        debug!("Event = {msg:?}");
+      }
+      Err(e) => {
+        error!("Error = {}", e);
+        error!("Terminating...");
+        break;
       }
     }
   }
-
   Ok(())
 }

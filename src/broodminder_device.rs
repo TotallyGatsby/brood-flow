@@ -1,5 +1,6 @@
 use chrono::prelude::{DateTime, Utc};
-use rumqttc::AsyncClient;
+use json::object;
+use rumqttc::{AsyncClient, QoS};
 use std::collections::HashMap;
 
 #[derive(Debug, Default)]
@@ -79,6 +80,10 @@ impl BroodminderDevice {
   }
 
   pub fn send_state_message(&mut self, mut client: AsyncClient) {
+    if self.device_id == "00:00:00" {
+      return ();
+    }
+
     // State topic should be whatever is set in 'state_topic' in the config message
     // e.g.
     // homeassistant/sensor/47:00:00/state
@@ -88,11 +93,33 @@ impl BroodminderDevice {
       // No more than 1 per 30s
       info!("Publishing state via MQTT for {:?}", self.device_id);
 
+      let simple_id = self.device_id.clone().replace(":", "");
+
+      let state_message = object! {
+        temperature_c: self.realtime_temperature_c,
+      };
+
+      let state_topic = format!("homeassistant/sensor/BM{}/state", simple_id);
+      info!("Publishing: {} to {}", state_message.dump(), state_topic);
+
+      tokio::task::spawn(async move {
+        match client
+          .publish(state_topic, QoS::AtLeastOnce, false, state_message.dump())
+          .await
+        {
+          Err(error) => info!("Error: {:?}", error),
+          Ok(_) => info!("Sent state!"),
+        }
+      });
+
       self.last_state_sent = Utc::now().timestamp_millis();
     }
   }
 
   pub fn send_config_messages(&mut self, mut client: AsyncClient) {
+    if self.device_id == "00:00:00" {
+      return ();
+    }
     // Home Assistant expects a configuration message be sent for each device:
     // https://www.home-assistant.io/docs/mqtt/discovery/
     // The topic must conform to:
@@ -124,9 +151,33 @@ impl BroodminderDevice {
 
     // Only send config every hour
     if Utc::now().timestamp_millis() - self.last_config_sent > 3600000 {
+      let simple_id = self.device_id.clone().replace(":", "");
+
       // No more than 1 per hour
       info!("Publishing configuration via MQTT for {:?}", self.device_id);
 
+      let config_message = object! {
+        name: self.device_id.clone(),
+        device_class: "temperature",
+        expire_after: 3600,
+        force_update: true,
+        state_class: "measurement",
+        unit_of_measurement: "°C",
+        state_topic: format!("homeassistant/sensor/BM{}/state", simple_id),
+        value_template: "{{ value_json.temperature_c }}"
+      };
+
+      let config_topic = format!("homeassistant/sensor/BM{}Temp/config", simple_id);
+      info!("Config message: {:?}", config_message.dump());
+      tokio::task::spawn(async move {
+        match client
+          .publish(config_topic, QoS::AtLeastOnce, false, config_message.dump())
+          .await
+        {
+          Err(error) => info!("Error: {:?}", error),
+          Ok(_) => info!("Sent config!"),
+        }
+      });
       self.last_config_sent = Utc::now().timestamp_millis();
     }
   }
