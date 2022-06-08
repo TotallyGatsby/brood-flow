@@ -4,14 +4,11 @@ extern crate log;
 mod brood_flow_config;
 mod broodminder_device;
 
-use brood_flow_config::Configuration;
 use broodminder_device::BroodminderDevice;
-
 use btleplug::api::{Central, CentralEvent, Manager as _, Peripheral as _, ScanFilter};
 use btleplug::platform::{Adapter, Manager};
-use config::Config;
 use futures::stream::StreamExt;
-use rumqttc::{AsyncClient, MqttOptions, QoS};
+use rumqttc::{AsyncClient, MqttOptions};
 use std::collections::HashMap;
 use std::error::Error;
 use std::time::Duration;
@@ -29,18 +26,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
   );
 
   // Load configuration.yaml into our Configuration object
-  // TODO: Handle when the configuration file isn't found
-  let settings = Config::builder()
-    .add_source(config::File::with_name("configuration.yml"))
-    .build()
-    .unwrap()
-    .try_deserialize::<Configuration>()
-    .unwrap();
-
+  let settings = brood_flow_config::get_config().unwrap();
   info!("Settings: {:?}", settings);
 
   // Set up the MQTT connection
-  // TODO: Be resilient to MQTT disconnections
+  // TODO: Be resilient to MQTT disconnections?
   let mut mqttoptions = MqttOptions::new(
     "brood-flow",
     settings.broker_host.unwrap(),
@@ -49,30 +39,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
   mqttoptions.set_keep_alive(Duration::from_secs(5));
 
   // Not sure why, but the client doesn't send if it's not marked as mutable here
+  #[allow(unused_mut)]
   let (mut client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
 
-  /*
-  tokio::task::spawn(async move {
-    for i in 0..10 {
-      match client
-        .publish("hello/rumqtt", QoS::AtLeastOnce, false, vec![i; i as usize])
-        .await
-      {
-        Err(error) => info!("Error: {:?}", error),
-        Ok(_) => info!("Sent!"),
-      }
-
-      tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-  });*/
-
-  // get the first bluetooth adapter
-  // connect to the adapter
+  // Get the first bluetooth adapter and connect to the adapter
   let btle_manager = Manager::new().await?;
   let central = get_central(&btle_manager).await;
 
   // Each adapter has an event stream, we fetch via events(),
-  // This will return what is essentially a
+  // This will return what is essentially:
   // Future<Result<Stream<Item=CentralEvent>>>.
   let mut events = central.events().await?;
 
@@ -80,15 +55,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
   // TODO: Add a scan filter?
   central.start_scan(ScanFilter::default()).await?;
 
-  // Cache of discovered devices
+  // Cache of discovered devices, as we want to store when the last message was sent per device
   let mut devices: HashMap<String, BroodminderDevice> = HashMap::new();
 
+  // Start a task to listen for BTLE events
   tokio::task::spawn(async move {
     info!("Listening for Broodminder events.");
     // When events are received by the BTLE stream, process them
-    // TODO: This should be run in its own thread (or task(?) once btleplug uses async channels).
     while let Some(event) = events.next().await {
-      // Right now, we only care about the data advertisements from the Broodminder devices
+      // Right now, we only care about the Data Advertisements from the Broodminder devices
       if let CentralEvent::ManufacturerDataAdvertisement {
         id,
         manufacturer_data,
@@ -101,10 +76,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
           let device_id = properties
             .unwrap()
             .local_name
-            .unwrap_or(String::from("00:00:00"));
+            .unwrap_or(String::from("00:00:00")); // Sometimes device ID doesn't correctly populate
 
           if devices.contains_key(&device_id) {
-            // Update the previous object
+            // Update the previous object if we've already seen it
             devices
               .entry(device_id.clone())
               .or_default()
@@ -121,18 +96,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
             devices.insert(device_id.clone(), brood_data);
           }
 
-          devices
-            .entry(device_id.clone())
-            .and_modify(|device| device.send_config_messages(client.clone()));
+          // Send our config and state messages (these functions already handle rate limiting)
+          if settings.mqtt_enabled {
+            devices
+              .entry(device_id.clone())
+              .and_modify(|device| device.send_config_messages(client.clone()));
 
-          devices
-            .entry(device_id.clone())
-            .and_modify(|device| device.send_state_message(client.clone()));
+            devices
+              .entry(device_id.clone())
+              .and_modify(|device| device.send_state_message(client.clone()));
+          }
         }
       }
     }
   });
 
+  // Pump the MQTT eventloop
   loop {
     let event = eventloop.poll().await;
     match event {

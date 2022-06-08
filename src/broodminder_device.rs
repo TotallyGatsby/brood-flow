@@ -1,4 +1,4 @@
-use chrono::prelude::{DateTime, Utc};
+use chrono::prelude::Utc;
 use json::object;
 use rumqttc::{AsyncClient, QoS};
 use std::collections::HashMap;
@@ -9,20 +9,26 @@ pub struct BroodminderDevice {
   pub model: u8,
   pub minor_version: u8,
   pub major_version: u8,
-  pub realtime_temp1: u8,
+  pub realtime_temp1: u8, // Realtime temperature can update every advertisement and is not aggregated
   pub battery_percent: u8,
-  pub elapsed1: u8,
+  pub elapsed1: u8, // How many 'ticks' have passed, I believe this is an internal aggregation/smoothing mechanism
   pub elapsed2: u8,
-  pub temp1: u8,
+  pub temp1: u8, // Temperature updates every 'elapsed' tick, and is an aggregated value
   pub temp2: u8,
-  pub realtime_temp2: u8,
+  pub realtime_temp2: u8, // Realtime temp uses two bytes and some math to calculate
+
+  // Calculated temperature values
   pub realtime_temperature_c: f32,
   pub realtime_temperature_f: f32,
   pub temperature_c: f32,
   pub temperature_f: f32,
+
+  // Millisecond epoch time since last messages were sent for this device, for rate limiting
   last_config_sent: i64,
   last_state_sent: i64,
 }
+
+// TODO: Cleanup logging, use a consistent approach to what should and shouldn't be logged
 
 impl BroodminderDevice {
   // Broodminder devices will broadcast 0x028D (653) as their manufacturer specific data id
@@ -43,6 +49,7 @@ impl BroodminderDevice {
       temp1: data[7],
       temp2: data[8],
       realtime_temp2: data[9],
+      // Pulled from the Broodminder manual
       realtime_temperature_c: (256.0 * data[9] as f32 + data[3] as f32 - 5000.0) / 100.0,
       realtime_temperature_f: ((256.0 * data[9] as f32 + data[3] as f32 - 5000.0) / 100.0) * 9.0
         / 5.0
@@ -50,11 +57,13 @@ impl BroodminderDevice {
       temperature_c: (256.0 * data[8] as f32 + data[7] as f32 - 5000.0) / 100.0,
       temperature_f: ((256.0 * data[8] as f32 + data[7] as f32 - 5000.0) / 100.0) * 9.0 / 5.0
         + 32.0,
+
       last_config_sent: 0,
       last_state_sent: 0,
     }
   }
 
+  // Take in a Data Advertisement and parse it into fields, updating in place
   pub fn update(&mut self, data: &Vec<u8>) {
     self.realtime_temp1 = data[3];
     self.battery_percent = data[4];
@@ -71,7 +80,10 @@ impl BroodminderDevice {
       ((256.0 * data[8] as f32 + data[7] as f32 - 5000.0) / 100.0) * 9.0 / 5.0 + 32.0;
   }
 
-  pub fn send_delete_messages(&self, mut client: AsyncClient) {
+  // Keeping this method here for now as documentation for how to send messages that remove devices from
+  // HomeAssistant, should that become necessary in the future.
+  #[allow(unused_mut, dead_code)] // Client needs to be mutable to send messages for some reason
+  pub fn send_delete_messages(&self, mut _client: AsyncClient) {
     // Home Assistant will delete any device it receives an empty config message for
     // The topic must conform to:
     //   <discovery_prefix>/<component>/[<node_id>/]<object_id>/config
@@ -79,6 +91,9 @@ impl BroodminderDevice {
     // A JSON payload must be empty
   }
 
+  // Sends a HomeAssistant compatible MQTT message with an update on the state of the device
+  // (e.g. the current temperature, humidity, weight, or other data as appropriate)
+  #[allow(unused_mut)] // Client needs to be mutable to send messages for some reason
   pub fn send_state_message(&mut self, mut client: AsyncClient) {
     if self.device_id == "00:00:00" {
       return ();
@@ -91,6 +106,7 @@ impl BroodminderDevice {
     // See: https://www.home-assistant.io/docs/configuration/templating/#processing-incoming-data
     if Utc::now().timestamp_millis() - self.last_state_sent > 30000 {
       // No more than 1 per 30s
+      // TODO: Magic numbers should be managed by config
       info!("Publishing state via MQTT for {:?}", self.device_id);
 
       let simple_id = self.device_id.clone().replace(":", "");
@@ -116,6 +132,7 @@ impl BroodminderDevice {
     }
   }
 
+  #[allow(unused_mut)] // Client needs to be mutable to send messages for some reason
   pub fn send_config_messages(&mut self, mut client: AsyncClient) {
     if self.device_id == "00:00:00" {
       return ();
@@ -149,6 +166,7 @@ impl BroodminderDevice {
     // config message -- one per sensor value type, e.g. humidity and temperature will need
     // different topics
 
+    // TODO: Magic numbers should probably be config managed
     // Only send config every hour
     if Utc::now().timestamp_millis() - self.last_config_sent > 3600000 {
       let simple_id = self.device_id.clone().replace(":", "");
