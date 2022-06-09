@@ -16,12 +16,18 @@ pub struct BroodminderDevice {
   pub temp1: u8, // Temperature updates every 'elapsed' tick, and is an aggregated value
   pub temp2: u8,
   pub realtime_temp2: u8, // Realtime temp uses two bytes and some math to calculate
+  pub realtime_weight1: u8, // Two bytes representing the total weight of the scale
+  pub realtime_weight2: u8,
+  // Broodminder devices also report left and right weight independently, but that seems
+  // like overkill for this application. If someone has a need, it wouldn't be difficult to add
 
-  // Calculated temperature values
+  // Calculated sensor values
   pub realtime_temperature_c: f32,
   pub realtime_temperature_f: f32,
   pub temperature_c: f32,
   pub temperature_f: f32,
+  pub realtime_weight_kg: f32,
+  pub realtime_weight_lbs: f32, // Home Assistant doesn't autotranslate kgs to lbs for some reason?
 
   // Millisecond epoch time since last messages were sent for this device, for rate limiting
   last_config_sent: i64,
@@ -49,6 +55,8 @@ impl BroodminderDevice {
       temp1: data[7],
       temp2: data[8],
       realtime_temp2: data[9],
+      realtime_weight1: data[19],
+      realtime_weight2: data[20],
       // Pulled from the Broodminder manual
       realtime_temperature_c: (256.0 * data[9] as f32 + data[3] as f32 - 5000.0) / 100.0,
       realtime_temperature_f: ((256.0 * data[9] as f32 + data[3] as f32 - 5000.0) / 100.0) * 9.0
@@ -58,6 +66,10 @@ impl BroodminderDevice {
       temperature_f: ((256.0 * data[8] as f32 + data[7] as f32 - 5000.0) / 100.0) * 9.0 / 5.0
         + 32.0,
 
+      realtime_weight_kg: ((256.0 * data[20] as f32) - data[19] as f32 - 32767.0) as f32 / 100.0,
+      realtime_weight_lbs: 2.204623
+        * ((256.0 * data[20] as f32) - data[19] as f32 - 32767.0) as f32
+        / 100.0,
       last_config_sent: 0,
       last_state_sent: 0,
     }
@@ -72,12 +84,19 @@ impl BroodminderDevice {
     self.temp1 = data[7];
     self.temp2 = data[8];
     self.realtime_temp2 = data[9];
+    self.realtime_weight1 = data[19];
+    self.realtime_weight2 = data[20];
+
     self.realtime_temperature_c = (256.0 * data[9] as f32 + data[3] as f32 - 5000.0) / 100.0;
     self.realtime_temperature_f =
       ((256.0 * data[9] as f32 + data[3] as f32 - 5000.0) / 100.0) * 9.0 / 5.0 + 32.0;
     self.temperature_c = (256.0 * data[8] as f32 + data[7] as f32 - 5000.0) / 100.0;
     self.temperature_f =
       ((256.0 * data[8] as f32 + data[7] as f32 - 5000.0) / 100.0) * 9.0 / 5.0 + 32.0;
+    self.realtime_weight_kg =
+      ((256.0 * data[20] as f32) - data[19] as f32 - 32767.0) as f32 / 100.0;
+    self.realtime_weight_lbs =
+      2.204623 * ((256.0 * data[20] as f32) - data[19] as f32 - 32767.0) as f32 / 100.0;
   }
 
   // Keeping this method here for now as documentation for how to send messages that remove devices from
@@ -111,9 +130,14 @@ impl BroodminderDevice {
 
       let simple_id = self.device_id.clone().replace(":", "");
 
-      let state_message = object! {
+      let mut state_message = object! {
         temperature_c: self.realtime_temperature_c,
       };
+
+      // Scales (model number 57) emit a weight value as well
+      if self.model == 57 {
+        state_message["weight_lbs"] = self.realtime_weight_lbs.into();
+      }
 
       let state_topic = format!("homeassistant/sensor/BM{}/state", simple_id);
       info!("Publishing: {} to {}", state_message.dump(), state_topic);
@@ -174,28 +198,61 @@ impl BroodminderDevice {
       // No more than 1 per hour
       info!("Publishing configuration via MQTT for {:?}", self.device_id);
 
-      let config_message = object! {
-        name: self.device_id.clone(),
-        device_class: "temperature",
-        expire_after: 3600,
-        force_update: true,
-        state_class: "measurement",
-        unit_of_measurement: "°C",
-        state_topic: format!("homeassistant/sensor/BM{}/state", simple_id),
-        value_template: "{{ value_json.temperature_c }}"
-      };
+      // Send temperature configuration message
+      if self.model == 47 || self.model == 57 {
+        let config_message = object! {
+          name: format!("{}_temperature", &self.device_id),
+          device_class: "temperature",
+          expire_after: 3600,
+          force_update: true,
+          state_class: "measurement",
+          unit_of_measurement: "°C",
+          state_topic: format!("homeassistant/sensor/BM{}/state", simple_id),
+          value_template: "{{ value_json.temperature_c }}",
+          unique_id: format!("{}_temperature", simple_id),
+        };
 
-      let config_topic = format!("homeassistant/sensor/BM{}Temp/config", simple_id);
-      info!("Config message: {:?}", config_message.dump());
-      tokio::task::spawn(async move {
-        match client
-          .publish(config_topic, QoS::AtLeastOnce, false, config_message.dump())
-          .await
-        {
-          Err(error) => info!("Error: {:?}", error),
-          Ok(_) => info!("Sent config!"),
-        }
-      });
+        let config_topic = format!("homeassistant/sensor/BM{}Temp/config", simple_id);
+        info!("Config message: {:?}", config_message.dump());
+        let task_client = client.clone();
+        tokio::task::spawn(async move {
+          match task_client
+            .publish(config_topic, QoS::AtLeastOnce, false, config_message.dump())
+            .await
+          {
+            Err(error) => info!("Error: {:?}", error),
+            Ok(_) => info!("Sent config!"),
+          }
+        });
+      }
+
+      // Send weight configuration message
+      if self.model == 57 {
+        let config_message = object! {
+          name: format!("{}_weight", &self.device_id),
+          expire_after: 3600,
+          force_update: true,
+          state_class: "measurement",
+          unit_of_measurement: "kg",
+          state_topic: format!("homeassistant/sensor/BM{}/state", simple_id),
+          value_template: "{{ value_json.weight_lbs }}",
+          unique_id: format!("{}_weight", simple_id),
+        };
+
+        let config_topic = format!("homeassistant/sensor/BM{}Weight/config", simple_id);
+        info!("Config message: {:?}", config_message.dump());
+        let task_client = client.clone();
+        tokio::task::spawn(async move {
+          match task_client
+            .publish(config_topic, QoS::AtLeastOnce, false, config_message.dump())
+            .await
+          {
+            Err(error) => info!("Error: {:?}", error),
+            Ok(_) => info!("Sent config!"),
+          }
+        });
+      }
+
       self.last_config_sent = Utc::now().timestamp_millis();
     }
   }

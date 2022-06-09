@@ -92,7 +92,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             brood_data.device_id = device_id.clone();
 
             info!("New Broodminder device detected: {:?}", brood_data);
-
             devices.insert(device_id.clone(), brood_data);
           }
 
