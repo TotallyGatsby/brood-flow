@@ -8,6 +8,7 @@ Type=simple
 Restart=always
 RestartSec=1
 User=pi
+WorkingDirectory=/home/pi/git/brood-flow/
 ExecStart=/usr/bin/env /home/pi/git/brood-flow/target/release/brood-flow
 
 [Install]
