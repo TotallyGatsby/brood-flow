@@ -1,0 +1,14 @@
+[Unit]
+Description=Broodminder to MQTT service
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=1
+User=pi
+ExecStart=/usr/bin/env /home/pi/git/brood-flow/target/release/brood-flow
+
+[Install]
+WantedBy=multi-user.target
