@@ -18,6 +18,10 @@ pub struct BroodminderDevice {
   pub realtime_temp2: u8, // Realtime temp uses two bytes and some math to calculate
   pub realtime_weight1: u8, // Two bytes representing the total weight of the scale
   pub realtime_weight2: u8,
+  pub weight_l1: u8,
+  pub weight_l2: u8,
+  pub weight_r1: u8,
+  pub weight_r2: u8,
   // Broodminder devices also report left and right weight independently, but that seems
   // like overkill for this application. If someone has a need, it wouldn't be difficult to add
 
@@ -28,6 +32,10 @@ pub struct BroodminderDevice {
   pub temperature_f: f32,
   pub realtime_weight_kg: f32,
   pub realtime_weight_lbs: f32, // Home Assistant doesn't autotranslate kgs to lbs for some reason?
+  pub weight_l_kgs: f32, // TODO: It's kinda silly to store both of these, right? Like, I can just store one unit
+  pub weight_r_kgs: f32, // and convert at reporting time.
+  pub weight_l_lbs: f32,
+  pub weight_r_lbs: f32,
 
   // Millisecond epoch time since last messages were sent for this device, for rate limiting
   last_config_sent: i64,
@@ -77,6 +85,7 @@ impl BroodminderDevice {
 
   // Take in a Data Advertisement and parse it into fields, updating in place
   pub fn update(&mut self, data: &Vec<u8>) {
+    debug!("Update: {:?}", data);
     self.realtime_temp1 = data[3];
     self.battery_percent = data[4];
     self.elapsed1 = data[5];

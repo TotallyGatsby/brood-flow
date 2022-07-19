@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
   // Set up the MQTT connection
   // TODO: Be resilient to MQTT disconnections?
   let mut mqttoptions = MqttOptions::new(
-    "brood-flow",
+    "brood-flow2",
     settings.broker_host.unwrap(),
     settings.broker_port.unwrap(),
   );
